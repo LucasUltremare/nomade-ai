@@ -1,0 +1,14 @@
+{
+  "name": "@relay/adapter-gemini",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "exports": { ".": "./src/index.ts" },
+  "types": "./src/index.ts",
+  "scripts": { "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": {
+    "@relay/core": "workspace:*",
+    "@relay/adapter-shared": "workspace:*"
+  }
+}
