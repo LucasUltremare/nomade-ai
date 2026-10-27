@@ -1,0 +1,32 @@
+{
+  "name": "relay",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Canvas open source para orquestrar IAs de assinatura (Claude Code, Codex, Gemini, Ollama) via as CLIs oficiais.",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --stream run dev",
+    "dev:server": "pnpm --filter @relay/server dev",
+    "dev:web": "pnpm --filter @relay/web dev",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.5",
+    "eslint": "10.13.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "^17.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  },
+  "type": "module"
+}
