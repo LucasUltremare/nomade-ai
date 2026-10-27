@@ -9,14 +9,16 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "pnpm -r --parallel --stream run dev",
+    "dev": "RELAY_DEV_WEB_URL=http://127.0.0.1:5173 pnpm -r --parallel --stream run dev",
     "dev:server": "pnpm --filter @relay/server dev",
     "dev:web": "pnpm --filter @relay/web dev",
     "build": "pnpm -r run build",
+    "start": "RELAY_STATIC_DIR=$PWD/packages/web/dist pnpm --filter @relay/server start",
     "typecheck": "pnpm -r run typecheck",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
