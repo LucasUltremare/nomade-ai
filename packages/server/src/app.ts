@@ -12,13 +12,36 @@ import type { ServerConfig } from './config.ts';
 import { isInside } from './config.ts';
 import type { PtyManager } from './pty-manager.ts';
 import type { HandoffLog } from './handoffs.ts';
+import { Nomade } from './nomade.ts';
+import { runTool } from './agent.ts';
 
 export interface AppDeps {
   config: ServerConfig;
   adapters: Record<ProviderId, Adapter>;
   ptys: PtyManager;
   handoffs: HandoffLog;
+  nomade?: Nomade;
 }
+
+const BIG_AGENTS = ['claude-code', 'codex', 'gemini'] as const;
+
+const modelField = z.string().min(1).max(80).optional();
+const taskSchema = z.object({ task: z.string().min(1).max(64 * 1024), model: modelField });
+const answerSchema = taskSchema.extend({ context: z.string().max(256 * 1024).optional() });
+const researchSchema = z.object({ query: z.string().min(1).max(400) });
+const agentStepSchema = z.object({ messages: z.array(z.unknown()).min(1).max(200), model: modelField });
+const agentToolSchema = z.object({
+  name: z.string().min(1).max(40),
+  args: z.record(z.string(), z.unknown()).default({}),
+  cwd: z.string().min(1).optional(),
+});
+const digestSchema = z.object({ task: z.string().max(64 * 1024), output: z.string().min(1).max(2 * 1024 * 1024), model: modelField });
+const runSchema = z.object({
+  agent: z.enum(BIG_AGENTS),
+  prompt: z.string().min(1).max(512 * 1024),
+  cwd: z.string().min(1).optional(),
+  sessionId: z.string().min(1).max(200).optional(),
+});
 
 const createSessionSchema = z.object({
   provider: z.enum([...PROVIDER_IDS, 'shell']),
@@ -50,6 +73,7 @@ function tokenMatches(expected: string, given: unknown): boolean {
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { config, adapters, ptys, handoffs } = deps;
+  const nomade = deps.nomade ?? new Nomade();
   const app = Fastify({ logger: process.env['VITEST'] ? false : { level: process.env['RELAY_LOG'] ?? 'info' } });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
 
@@ -74,9 +98,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     providers: PROVIDER_IDS,
   }));
 
-  app.get<{ Querystring: { refresh?: string } }>('/api/providers', async (req) => {
-    const refresh = req.query.refresh === '1';
-    const results = await Promise.all(
+  const detectAll = (refresh: boolean) =>
+    Promise.all(
       PROVIDER_IDS.map(async (id) => {
         const cached = detectCache.get(id);
         if (!refresh && cached && Date.now() - cached.at < 60_000) return cached.result;
@@ -95,7 +118,97 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
         return result;
       }),
     );
-    return results;
+
+  app.get<{ Querystring: { refresh?: string } }>('/api/providers', async (req) => detectAll(req.query.refresh === '1'));
+
+  // ---------- Nomade: apoio local aos agentes grandes ----------
+  const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+  app.get('/api/nomade/status', async () => nomade.status());
+
+  app.post('/api/nomade/triage', async (req, reply) => {
+    const parsed = taskSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    const available = (await detectAll(false))
+      .filter((p) => p.installed && p.login === 'logged-in' && p.id !== 'ollama')
+      .map((p) => p.id);
+    try {
+      return await nomade.triage(parsed.data.task, available, parsed.data.model ? { model: parsed.data.model } : {});
+    } catch (err) {
+      return reply.code(503).send({ error: errorMessage(err) });
+    }
+  });
+
+  app.post('/api/nomade/research', async (req, reply) => {
+    const parsed = researchSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    try {
+      return await nomade.research(parsed.data.query);
+    } catch (err) {
+      return reply.code(502).send({ error: errorMessage(err) });
+    }
+  });
+
+  app.post('/api/nomade/answer', async (req, reply) => {
+    const parsed = answerSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    try {
+      return await nomade.answer(parsed.data.task, parsed.data.context, parsed.data.model ? { model: parsed.data.model } : {});
+    } catch (err) {
+      return reply.code(503).send({ error: errorMessage(err) });
+    }
+  });
+
+  app.post('/api/nomade/digest', async (req, reply) => {
+    const parsed = digestSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    try {
+      return await nomade.digest(parsed.data.task, parsed.data.output, parsed.data.model ? { model: parsed.data.model } : {});
+    } catch (err) {
+      return reply.code(503).send({ error: errorMessage(err) });
+    }
+  });
+
+  // ---------- Agent loop (Hermes-style): client-driven, stateless on server ----------
+  app.post('/api/agent/step', async (req, reply) => {
+    const parsed = agentStepSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    try {
+      return await nomade.agentStep(parsed.data.messages, parsed.data.model ? { model: parsed.data.model } : {});
+    } catch (err) {
+      return reply.code(503).send({ error: errorMessage(err) });
+    }
+  });
+
+  app.post('/api/agent/tool', async (req, reply) => {
+    const parsed = agentToolSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    const cwd = parsed.data.cwd ? resolve(parsed.data.cwd) : config.defaultCwd;
+    if (parsed.data.cwd && !config.roots.some((r) => isInside(cwd, r))) {
+      return reply.code(400).send({ error: `cwd outside allowed roots (${config.roots.join(', ')})` });
+    }
+    try {
+      return await runTool(parsed.data.name, parsed.data.args, { roots: config.roots, defaultCwd: config.defaultCwd, cwd });
+    } catch (err) {
+      return reply.code(502).send({ error: errorMessage(err) });
+    }
+  });
+
+  // Execução headless num agente grande (Claude Code, Codex, Gemini), via a CLI já logada.
+  app.post('/api/run', async (req, reply) => {
+    const parsed = runSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    const { agent, prompt, sessionId } = parsed.data;
+    const cwd = resolve(parsed.data.cwd ?? config.defaultCwd);
+    if (!config.roots.some((r) => isInside(cwd, r))) {
+      return reply.code(400).send({ error: `cwd fora dos diretórios permitidos (${config.roots.join(', ')})` });
+    }
+    try {
+      const r = await adapters[agent].runHeadless({ prompt, cwd, ...(sessionId ? { sessionId } : {}) });
+      return { agent, text: r.text, durationMs: r.durationMs, exitCode: r.exitCode, ...(r.sessionId ? { sessionId: r.sessionId } : {}) };
+    } catch (err) {
+      return reply.code(502).send({ error: errorMessage(err) });
+    }
   });
 
   app.get('/api/sessions', async () => ptys.list());

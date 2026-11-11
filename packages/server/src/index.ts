@@ -3,17 +3,23 @@ import { PtyManager } from './pty-manager.ts';
 import { HandoffLog } from './handoffs.ts';
 import { createAdapters } from './adapters.ts';
 import { buildApp } from './app.ts';
+import { Nomade } from './nomade.ts';
 
 const config = loadConfig();
 const ptys = new PtyManager({ scrollbackBytes: config.scrollbackBytes });
 const adapters = createAdapters(ptys);
 const handoffs = new HandoffLog();
-const app = await buildApp({ config, adapters, ptys, handoffs });
+const nomade = new Nomade();
+const app = await buildApp({ config, adapters, ptys, handoffs, nomade });
 
 await app.listen({ host: config.host, port: config.port });
 
 const webUrl = config.devWebUrl ?? `http://${config.host}:${config.port}`;
-app.log.info(`Relay pronto. Abra: ${webUrl}/?token=${config.token}`);
+app.log.info(`Nomade Agents pronto. Abra: ${webUrl}/?token=${config.token}`);
+nomade
+  .warm()
+  .then(() => app.log.info('Nomade aquecido e pronto para decidir.'))
+  .catch((err: unknown) => app.log.warn(`Nomade não aqueceu (Ollama fora do ar?): ${err instanceof Error ? err.message : String(err)}`));
 if (config.host !== '127.0.0.1' && config.host !== 'localhost') {
   app.log.warn(`ATENÇÃO: escutando em ${config.host}, não só em loopback.`);
 }

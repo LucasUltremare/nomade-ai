@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { delimiter, isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface ServerConfig {
   host: string;
@@ -16,11 +17,17 @@ export interface ServerConfig {
   scrollbackBytes: number;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] = process.argv): ServerConfig {
+  // Separador do SO (":" no POSIX, ";" no Windows), para não quebrar "C:\...".
   const roots = (env['RELAY_ROOTS'] ?? homedir())
-    .split(':')
+    .split(delimiter)
     .filter(Boolean)
     .map((p) => resolve(p));
+  // Flags em vez de "VAR=x cmd" nos scripts, que não funciona no Windows.
+  if (argv.includes('--dev') && !env['RELAY_DEV_WEB_URL']) env = { ...env, RELAY_DEV_WEB_URL: 'http://127.0.0.1:5173' };
+  if (argv.includes('--prod') && !env['RELAY_STATIC_DIR']) {
+    env = { ...env, RELAY_STATIC_DIR: fileURLToPath(new URL('../../web/dist', import.meta.url)) };
+  }
   const defaultCwd = resolve(env['RELAY_DEFAULT_CWD'] ?? process.cwd());
   return {
     host: env['RELAY_HOST'] ?? '127.0.0.1',
@@ -35,7 +42,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
 }
 
 export function isInside(path: string, root: string): boolean {
-  const p = resolve(path);
-  const r = resolve(root);
-  return p === r || p.startsWith(r.endsWith('/') ? r : `${r}/`);
+  const rel = relative(resolve(root), resolve(path));
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }

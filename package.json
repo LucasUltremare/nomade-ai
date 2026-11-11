@@ -9,11 +9,13 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "RELAY_DEV_WEB_URL=http://127.0.0.1:5173 pnpm -r --parallel --stream run dev",
+    "dev": "pnpm -r --parallel --stream run dev",
+    "nomade:pull": "ollama pull huihui_ai/qwen2.5-coder-abliterate:3b && ollama pull dolphin3:8b",
+    "nomade:build": "ollama create nomade -f models/nomade/Modelfile && ollama create nomade-x -f models/nomade-x/Modelfile",
     "dev:server": "pnpm --filter @relay/server dev",
     "dev:web": "pnpm --filter @relay/web dev",
     "build": "pnpm -r run build",
-    "start": "RELAY_STATIC_DIR=$PWD/packages/web/dist pnpm --filter @relay/server start",
+    "start": "pnpm --filter @relay/server start",
     "typecheck": "pnpm -r run typecheck",
     "lint": "eslint .",
     "test": "vitest run",

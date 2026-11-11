@@ -1,27 +1,90 @@
 import type { DetectResult, ProviderId } from '@relay/core';
 
-export interface SessionInfo {
-  id: string;
-  provider: ProviderId | 'shell';
-  label: string;
-  cwd: string;
-  pid: number;
-  cols: number;
-  rows: number;
-  alive: boolean;
-  exitCode?: number;
-  createdAt: string;
+export type AgentId = 'nomade' | 'claude-code' | 'codex' | 'gemini';
+export type BigAgentId = Exclude<AgentId, 'nomade'>;
+
+export interface NomadeStatus {
+  online: boolean;
+  model?: string;
+  compiled: boolean;
+  baseUrl: string;
+  search: SearchProviderId[];
+  variants: NomadeVariant[];
+  error?: string;
 }
 
-export interface HandoffEntry {
+export interface NomadeVariant {
   id: string;
-  at: string;
-  from?: string;
-  to: string;
-  source: 'selection' | 'last-output' | 'manual';
-  submitted: boolean;
-  chars: number;
-  preview: string;
+  label: string;
+  model: string;
+  base: string;
+  note: string;
+  installed: boolean;
+}
+
+export type SearchProviderId = 'nvd' | 'searxng' | 'ollama' | 'brave' | 'wikipedia';
+
+export interface ResearchSource {
+  title: string;
+  url: string;
+  snippet: string;
+  read: boolean;
+  excerpt: string;
+}
+
+export interface Research {
+  query: string;
+  provider: SearchProviderId;
+  sources: ResearchSource[];
+  context: string;
+  ms: number;
+}
+
+export interface TriageDecision {
+  agent: AgentId;
+  complexity: 'trivial' | 'normal' | 'heavy';
+  reason: string;
+  brief: string;
+  web: boolean;
+  query: string;
+  suggested: AgentId;
+  model: string;
+  ms: number;
+}
+
+export interface NomadeReply {
+  text: string;
+  model: string;
+  ms: number;
+}
+
+export interface ChatMsg {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+}
+
+export interface ToolCallV {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface AgentStep {
+  content: string;
+  tool: ToolCallV | null;
+  model: string;
+}
+
+export interface ToolResult {
+  result: string;
+  data?: unknown;
+}
+
+export interface RunResult {
+  agent: BigAgentId;
+  text: string;
+  durationMs: number;
+  exitCode: number | null;
+  sessionId?: string;
 }
 
 export interface RelayConfig {
@@ -59,12 +122,13 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const token = localStorage.getItem(TOKEN_KEY) ?? '';
   const res = await fetch(path, {
     method,
     headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    ...(signal ? { signal } : {}),
   });
   if (!res.ok) {
     let message = res.statusText;
@@ -83,18 +147,17 @@ export const api = {
   health: () => request<{ ok: boolean }>('GET', '/api/health'),
   config: () => request<RelayConfig>('GET', '/api/config'),
   providers: (refresh = false) => request<DetectResult[]>('GET', `/api/providers${refresh ? '?refresh=1' : ''}`),
-  sessions: () => request<SessionInfo[]>('GET', '/api/sessions'),
-  createSession: (body: { provider: ProviderId | 'shell'; cwd: string; label?: string; cols?: number; rows?: number }) =>
-    request<SessionInfo>('POST', '/api/sessions', body),
-  deleteSession: (id: string) => request<{ ok: boolean }>('DELETE', `/api/sessions/${id}`),
-  lastOutput: (id: string) => request<{ text: string }>('GET', `/api/sessions/${id}/last-output`),
-  handoffs: () => request<HandoffEntry[]>('GET', '/api/handoffs'),
-  sendHandoff: (body: { from?: string; to: string; text: string; submit: boolean; source: HandoffEntry['source'] }) =>
-    request<HandoffEntry>('POST', '/api/handoffs', body),
+  nomadeStatus: () => request<NomadeStatus>('GET', '/api/nomade/status'),
+  triage: (task: string, model?: string) => request<TriageDecision>('POST', '/api/nomade/triage', { task, ...(model ? { model } : {}) }),
+  answer: (task: string, context?: string, model?: string) =>
+    request<NomadeReply>('POST', '/api/nomade/answer', { task, ...(context ? { context } : {}), ...(model ? { model } : {}) }),
+  research: (query: string) => request<Research>('POST', '/api/nomade/research', { query }),
+  digest: (task: string, output: string, model?: string) =>
+    request<NomadeReply>('POST', '/api/nomade/digest', { task, output, ...(model ? { model } : {}) }),
+  agentStep: (messages: ChatMsg[], model?: string, signal?: AbortSignal) =>
+    request<AgentStep>('POST', '/api/agent/step', { messages, ...(model ? { model } : {}) }, signal),
+  agentTool: (name: string, args: Record<string, unknown>, cwd?: string, signal?: AbortSignal) =>
+    request<ToolResult>('POST', '/api/agent/tool', { name, args, ...(cwd ? { cwd } : {}) }, signal),
+  run: (body: { agent: BigAgentId; prompt: string; cwd?: string; sessionId?: string }, signal?: AbortSignal) =>
+    request<RunResult>('POST', '/api/run', body, signal),
 };
-
-export function wsUrl(sessionId: string): string {
-  const token = localStorage.getItem(TOKEN_KEY) ?? '';
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}/ws/terminal/${sessionId}?token=${encodeURIComponent(token)}`;
-}
